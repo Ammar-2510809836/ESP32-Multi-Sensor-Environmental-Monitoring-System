@@ -1,0 +1,185 @@
+ESP32 Multi-Sensor System — Demonstration 
+This project uses an ESP32-S2 WROVER, a BMP280, an MPU6050, and an HD-38 soil moisture sensor to create a complete environmental monitoring system with a web dashboard and JSON API.
+________________________________________
+1. System Overview
+When the ESP32 starts, it initializes:
+•	I²C communication on pins SDA = 8, SCL = 9
+•	Soil moisture analog input on pin 1
+•	BMP280 environmental sensor
+•	MPU6050 motion sensor
+•	WiFi (Station + Access Point modes)
+•	A WebServer for a dashboard and API
+The entire system updates every 2 seconds, reads all sensors, validates them, and displays the data on:
+•	Serial Monitor
+•	Web Dashboard (HTML)
+•	JSON API
+________________________________________
+2. Boot Process
+When powered on, the ESP32 prints:
+•	“ESP32 Starting…”
+•	Tries detecting BMP280 at addresses 0x76 and 0x77
+•	Tries initializing MPU6050
+•	Connects to WiFi (FH_GAST)
+•	Creates its own Access Point (ESP32_ENV)
+•	Starts a web server
+•	Prints: “System ready!”
+If sensors are missing, it prints clear error messages.
+________________________________________
+3. Sensor Initialization Behavior
+BMP280 Initialization
+•	ESP32 tries address 0x76
+•	If not found → tries 0x77
+•	If still not found:
+o	Displays “BMP280 NOT DETECTED”
+o	Shows reconnection instructions
+o	Sensor marked as disconnected
+If detected:
+•	Sensor is configured
+•	Forced measurement mode is used
+MPU6050 Initialization
+If not detected:
+•	Prints “MPU6050 NOT DETECTED!”
+•	Marks sensor as disconnected
+If detected:
+•	Sets accelerometer range 8G
+•	Gyro range ±500 deg/sec
+•	Filter bandwidth 21 Hz
+________________________________________
+4. Sensor Reading Behavior (Real-Time)
+Every 2 seconds, the ESP32 reads:
+1. BMP280
+•	Temperature
+•	Pressure
+•	Altitude
+If values are invalid (out of realistic range), it:
+•	Prints: “BMP280 readings invalid!”
+•	Marks sensor disconnected
+•	Clears values to “nan”
+2. MPU6050
+•	Accelerometer (X/Y/Z)
+•	Gyroscope (X/Y/Z)
+•	Temperature
+If reading fails or values are unrealistic:
+•	Prints: “MPU6050 readings invalid! Sensor disconnected.”
+•	Marks sensor disconnected
+•	Clears values to “nan”
+3. Soil Moisture
+Raw ADC:
+•	1500 = 100% (wet)
+•	8191 = 0% (dry)
+The system:
+•	Reads raw ADC
+•	Maps it to moisture %
+•	Constrains between 0–100%
+If ADC is invalid:
+•	Prints: “Soil sensor reading invalid!”
+•	Defaults to dry
+________________________________________
+5. Warning System Behavior
+The system automatically detects abnormalities and generates warnings.
+Environmental Warnings (BMP280)
+•	Temperature > 45°C → HIGH TEMP
+•	Temperature < -10°C → LOW TEMP
+•	Pressure < 950 hPa → LOW PRESSURE
+•	Pressure > 1050 hPa → HIGH PRESSURE
+•	Sensor disconnected → BMP280 DISCONNECTED
+Motion Sensor Warnings (MPU6050)
+•	Sensor disconnected → MPU6050 DISCONNECTED
+Soil Moisture Warnings
+•	Soil < 20% → SOIL TOO DRY
+•	Soil > 80% → SOIL TOO WET
+Normal Condition
+If no warnings are active → “NORMAL”
+________________________________________
+6. Serial Monitor Demonstration (Example Output)
+Every 2 seconds, the Serial Monitor shows:
+========== SENSOR READINGS ==========
+BMP280 - Temp: 25.71°C | Pressure: 955.88hPa | Altitude: 493.77m
+MPU6050 - Accel: 10.13,-0.12,-2.01 | Gyro: -0.03,0.00,0.01
+Soil - 0% (Raw: 8191)
+Status: NORMAL
+=====================================
+If something is wrong, messages appear such as:
+✘ BMP280 NOT DETECTED at 0x76 or 0x77!
+✘ MPU6050 readings invalid! Sensor disconnected.
+✘ Soil sensor reading invalid!
+________________________________________
+7. Web Dashboard Demonstration
+Visit:
+http://[ESP32_IP]
+The dashboard shows:
+BMP280 Section
+•	Temperature (°C)
+•	Pressure (hPa)
+•	Altitude (m)
+•	If disconnected → “SENSOR NOT CONNECTED” in red
+MPU6050 Section
+•	Acceleration X/Y/Z
+•	Gyro X/Y/Z
+•	Temperature
+•	If disconnected → “SENSOR NOT CONNECTED” in red
+Soil Moisture Section
+•	Moisture %
+•	Raw sensor value
+Warning Banner
+At the bottom:
+•	Green = NORMAL
+•	Orange = Sensor disconnected
+•	Red = High-level warning
+Dashboard auto-refreshes every 3 seconds.
+________________________________________
+8. JSON API Demonstration
+Visit:
+http://[ESP32_IP]/json
+Returns machine-readable sensor data such as:
+{
+  "bmp280": {
+    "connected": true,
+    "temperature": 25.71,
+    "pressure": 955.88,
+    "altitude": 493.77
+  },
+  "mpu6050": {
+    "connected": true,
+    "accel": {"x":10.13,"y":-0.12,"z":-2.01},
+    "gyro": {"x":-0.03,"y":0.00,"z":0.01},
+    "temperature":25.86
+  },
+  "soil": {
+    "raw":8191,
+    "percent":0
+  },
+  "warning":"NORMAL"
+}
+If a sensor fails, "connected": false will appear.
+________________________________________
+9. WiFi Demonstration
+Station Mode
+Tries connecting to FH_GAST.
+If successful, prints the local IP.
+Access Point Mode
+Always creates backup WiFi:
+•	SSID: ESP32_ENV
+•	Password: 12345678
+•	IP: 192.168.4.1
+Dashboard and JSON API are available on both networks.
+________________________________________
+10. Automatic Reconnection Behavior
+If any sensor disconnects (e.g., SDA wire unplugged):
+1.	System prints an error
+2.	Marks sensor as disconnected
+3.	Dashboard shows warning
+4.	JSON reports "connected": false
+5.	System automatically retries initialization
+6.	Once reconnected → normal readings return
+Everything happens without rebooting.
+________________________________________
+11. Overall Behavior Summary
+•	Fully automatic initialization
+•	Live sensor monitoring
+•	Self-healing reconnection
+•	Web dashboard & JSON API
+•	Error detection
+•	Warning system
+•	Independent sensor operation
+•	Updates every 2 seconds
