@@ -1,0 +1,183 @@
+ESP32 Multi-Sensor Environmental Monitoring System
+📋 Project Overview
+This project implements an IoT-based environmental monitoring system using an ESP32-S2 microcontroller integrated with multiple sensors. The system continuously monitors environmental parameters and motion data, presenting real-time information through both serial output and a web-based dashboard.
+🎯 Project Objectives
+•	Interface ESP32 with BMP280 environmental sensor via I2C protocol
+•	Measure and monitor temperature, atmospheric pressure, and altitude
+•	Implement robust error handling and sensor validation
+•	Create a web-based visualization dashboard
+•	Extend functionality with additional sensors (MPU6050, HD-38)
+•	Ensure system reliability with automatic reconnection mechanisms
+🔧 Hardware Components
+Microcontroller:
+•	ESP32-S2 WROVER Dev Module 
+o	Dual-mode WiFi (Station + Access Point)
+o	12-bit ADC for analog sensors
+o	I2C hardware interface
+Sensors:
+1.	BMP280 - Environmental Sensor
+o	Temperature range: -40°C to +85°C
+o	Pressure range: 300 to 1100 hPa
+o	I2C address: 0x76 (configurable to 0x77)
+o	Altitude calculation based on atmospheric pressure
+2.	MPU6050 - 6-Axis Motion Sensor
+o	3-axis accelerometer (±2g to ±16g)
+o	3-axis gyroscope (±250°/s to ±2000°/s)
+o	Built-in temperature sensor
+o	I2C address: 0x68
+3.	HD-38 - Capacitive Soil Moisture Sensor
+o	Analog output (0-8191 raw ADC value)
+o	Calibrated to 0-100% moisture percentage
+🔌 Wiring Configuration
+I2C Bus (Shared by BMP280 and MPU6050):
+ESP32 GPIO 8  →  SDA (Serial Data Line)
+ESP32 GPIO 9  →  SCL (Serial Clock Line)
+BMP280 Specific:
+VCC  →  3.3V
+GND  →  GND
+CSB  →  3.3V (Enables I2C mode)
+SDO  →  GND  (Sets address to 0x76)
+MPU6050 Specific:
+VCC  →  3.3V
+GND  →  GND
+AD0  →  GND  (Sets address to 0x68)
+HD-38 Soil Moisture:
+VCC  →  3.3V
+GND  →  GND
+AO   →  GPIO 1 (Analog input)
+💻 Software Architecture
+Programming Environment:
+•	Arduino IDE 2.3.6
+•	ESP32 Board Support Package
+•	C++ programming language
+Libraries Used:
+Wire.h                      // I2C communication protocol
+Adafruit_BMP280.h          // BMP280 sensor driver
+Adafruit_MPU6050.h         // MPU6050 sensor driver
+Adafruit_Sensor.h          // Unified sensor library
+WiFi.h                     // ESP32 WiFi functionality
+WebServer.h                // HTTP server implementation
+Key Software Features:
+1.	Sensor Initialization & Configuration
+o	Auto-detection of sensors on I2C bus
+o	Configurable sampling rates and filters
+o	Multiple I2C address support
+2.	Data Acquisition
+o	Forced measurement mode for power efficiency
+o	2-second polling interval
+o	Simultaneous multi-sensor reading
+3.	Error Handling & Validation
+o	Connection status monitoring
+o	Data range validation (physical limits)
+o	NaN (Not a Number) handling for invalid readings
+o	Automatic sensor reconnection logic
+4.	Communication Interfaces
+o	Serial Monitor: Real-time debugging output (115200 baud)
+o	HTTP Web Server: HTML dashboard with auto-refresh
+o	JSON API: Structured data endpoint for external integration
+5.	Network Functionality
+o	Station Mode: Connects to existing WiFi (FH_GAST)
+o	Access Point Mode: Creates backup network (ESP32_ENV)
+o	Fallback mechanism if primary WiFi unavailable
+📊 Data Processing
+BMP280 Measurements:
+•	Temperature: Direct reading in °C
+•	Pressure: Converted from Pa to hPa (÷100)
+•	Altitude: Calculated using barometric formula with sea-level pressure reference
+MPU6050 Measurements:
+•	Acceleration: 3-axis linear acceleration (m/s²)
+•	Angular Velocity: 3-axis rotation rate (rad/s)
+•	Temperature: Internal sensor temperature (°C)
+Soil Moisture:
+•	Raw ADC Value: 0-8191 (12-bit resolution)
+•	Calibrated Percentage: Linear mapping using measured dry/wet values 
+o	Dry (air): 8191 → 0%
+o	Wet (water): 1500 → 100%
+🌐 Web Dashboard Features
+HTML Interface:
+•	Responsive design with clean formatting
+•	Auto-refresh every 3 seconds
+•	Color-coded status indicators: 
+o	🟢 Green: Normal operation
+o	🟠 Orange: Sensor disconnected
+o	🔴 Red: Warning threshold exceeded
+JSON API Response Structure:
+{
+  "bmp280": {
+    "connected": true,
+    "temperature": 25.70,
+    "pressure": 955.22,
+    "altitude": 494.77
+  },
+  "mpu6050": {
+    "connected": true,
+    "accel": {"x": 10.16, "y": -0.14, "z": -1.86},
+    "gyro": {"x": -0.04, "y": 0.00, "z": 0.00},
+    "temperature": 25.85
+  },
+  "soil": {
+    "raw": 8191,
+    "percent": 0
+  },
+  "warning": "SOIL TOO DRY!"
+}
+⚠️ Warning System
+Automated Alerts:
+•	High temperature: > 45°C
+•	Low temperature: < -10°C
+•	High pressure: > 1050 hPa
+•	Low pressure: < 950 hPa
+•	Soil too dry: < 20%
+•	Soil too wet: > 80%
+•	Sensor disconnection detection
+🔬 Technical Implementation Details
+I2C Communication Protocol:
+•	Master-Slave architecture (ESP32 as master)
+•	100 kHz clock frequency (standard mode)
+•	Pull-up resistors enabled internally
+•	Multi-drop capability (multiple sensors on same bus)
+Sensor Configuration:
+BMP280 Settings:
+Mode: FORCED (power-saving between readings)
+Temperature Oversampling: x2
+Pressure Oversampling: x16 (high accuracy)
+IIR Filter: x16 (noise reduction)
+Standby Time: 500ms
+MPU6050 Settings:
+Accelerometer Range: ±8g
+Gyroscope Range: ±500°/s
+Digital Low Pass Filter: 21 Hz bandwidth
+Validation Logic:
+BMP280:
+if (temperature < -40 || temperature > 85 ||
+    pressure < 300 || pressure > 1200 ||
+    isnan(temperature) || isnan(pressure)) {
+    // Mark sensor as disconnected
+}
+MPU6050:
+if (abs(accelX) > 50 || abs(accelY) > 50 || abs(accelZ) > 50 ||
+    abs(gyroX) > 10 || abs(gyroY) > 10 || abs(gyroZ) > 10) {
+    // Invalid reading detected
+}
+🔄 Auto-Reconnection Mechanism
+void readSensor() {
+  if (!sensorConnected) {
+    sensorConnected = initSensor();  // Attempt reconnection
+    if (!sensorConnected) {
+      setDataToNaN();
+      return;
+    }
+  }
+  // Normal reading operation
+}
+Benefits:
+•	System continues operating even if sensors temporarily disconnect
+•	No manual reset required
+•	Independent sensor operation (one failure doesn't affect others)
+📈 Performance Characteristics
+•	Measurement Frequency: 0.5 Hz (every 2 seconds)
+•	Temperature Accuracy: ±1°C (BMP280)
+•	Pressure Accuracy: ±1 hPa (BMP280)
+•	Altitude Resolution: ~1 meter
+•	WiFi Range: Typical 50-100 meters (depends on environment)
+•	Power Consumption: ~80-150mA (active measurement)
