@@ -45,7 +45,7 @@ const char* AP_PASS = "12345678";        // Backup access point password
 float temperature = NAN;           // Temperature in °C (NAN = Not A Number, indicates no data)
 float pressure = NAN;              // Atmospheric pressure in hPa
 float altitude = NAN;              // Calculated altitude in meters
-float SEA_LEVEL_PRESSURE = 1013.25;// Standard sea level pressure for altitude calculation
+float SEA_LEVEL_PRESSURE = 1013.25;// Standard sea level pressure for altitude calculation (adjust for your location)
 bool bmpConnected = false;         // Track if BMP280 is connected and working
 
 // MPU6050 sensor variables
@@ -57,6 +57,39 @@ bool mpuConnected = false;                        // Track if MPU6050 is connect
 // Soil moisture sensor variables
 int soilRaw = 0;         // Raw ADC value (0-8191 on ESP32-S2)
 int soilPercent = 0;     // Moisture percentage (0-100%)
+
+// Soil calibration constants (measured experimentally)
+const int SOIL_RAW_DRY = 8191;  // Raw ADC value when completely dry (in air/no snow)
+const int SOIL_RAW_WET = 1500;  // Raw ADC value when completely wet (in water/wet snow)
+
+// Warning system debounce
+unsigned long lastWarningTime = 0;
+const unsigned long WARNING_INTERVAL = 3000; // Update warnings every 3 seconds
+String cachedWarning = "NORMAL";
+
+// ------------------ HELPER FUNCTIONS ------------------
+
+/*
+ * Safely convert float to string for HTML display
+ * Returns "N/A" for invalid/NAN values instead of showing "nan"
+ */
+String floatToStringOrNA(float value, int decimals = 2) {
+  if (isnan(value)) {
+    return "N/A";
+  }
+  return String(value, decimals);
+}
+
+/*
+ * Safely convert float to string for JSON output
+ * Returns "null" for invalid/NAN values (valid JSON format)
+ */
+String floatToStringOrNull(float value, int decimals = 2) {
+  if (isnan(value)) {
+    return "null";
+  }
+  return String(value, decimals);
+}
 
 // ------------------ BMP280 INITIALIZATION ------------------
 /*
@@ -202,12 +235,12 @@ void readMPU6050() {
   mpuTemp = temp.temperature;
   
   // Validate readings - check if values are physically reasonable
-  // For a stationary device: acceleration should be ~10 m/s² (gravity), gyro ~0
-  // If values are extreme, the sensor is likely disconnected or malfunctioning
+  // For accelerometer: ±20 m/s² is more reasonable than ±50 (allows for movement)
+  // For gyroscope: ±100 rad/s is very high but possible during rapid movement
   if (isnan(accelX) || isnan(accelY) || isnan(accelZ) ||
       isnan(gyroX) || isnan(gyroY) || isnan(gyroZ) ||
-      abs(accelX) > 50 || abs(accelY) > 50 || abs(accelZ) > 50 ||
-      abs(gyroX) > 10 || abs(gyroY) > 10 || abs(gyroZ) > 10) {
+      abs(accelX) > 20 || abs(accelY) > 20 || abs(accelZ) > 20 ||
+      abs(gyroX) > 100 || abs(gyroY) > 100 || abs(gyroZ) > 100) {
     Serial.println("✘ MPU6050 readings invalid! Sensor disconnected.");
     mpuConnected = false;
     accelX = accelY = accelZ = NAN;
@@ -222,23 +255,23 @@ void readMPU6050() {
  * Read soil moisture from HD-38 analog sensor
  * Converts raw ADC value to percentage (0-100%)
  * Calibrated using measured dry and wet values
+ * For ski slope: measures snow moisture content
  */
 void readSoilMoisture() {
   // Read analog value from sensor (12-bit ADC: 0-8191)
   soilRaw = analogRead(SOIL_PIN);
   
-  // Validate reading - ESP32-S2 ADC range is 0-8191
+  // Validate ADC range
   if (soilRaw < 0 || soilRaw > 8191) {
-    Serial.println("✘ Soil sensor reading invalid!");
-    soilRaw = 8191;    // Default to dry reading
+    Serial.println("✘ Soil sensor reading invalid (out of range)!");
+    soilRaw = SOIL_RAW_DRY;    // Default to dry reading
     soilPercent = 0;
     return;
   }
   
   // Convert raw value to percentage using calibration values
-  // Calibration: Dry (air) = 8191, Wet (water) = 1500
-  // map() function: map(value, fromLow, fromHigh, toLow, toHigh)
-  soilPercent = map(soilRaw, 8191, 1500, 0, 100);
+  // For ski slope: 0% = dry/no snow, 100% = wet/slushy snow
+  soilPercent = map(soilRaw, SOIL_RAW_DRY, SOIL_RAW_WET, 0, 100);
   
   // Constrain result to 0-100% range (in case raw value goes outside calibration)
   soilPercent = constrain(soilPercent, 0, 100);
@@ -249,8 +282,15 @@ void readSoilMoisture() {
  * Check all sensor values against warning thresholds
  * Returns a string describing current status/warnings
  * Multiple warnings can be combined with "|" separator
+ * Uses debouncing to prevent warning flicker
  */
 String getWarning() {
+  // Only update warnings every 3 seconds to prevent flickering
+  if (millis() - lastWarningTime < WARNING_INTERVAL) {
+    return cachedWarning;
+  }
+  
+  lastWarningTime = millis();
   String warnings = "";  // Start with empty warnings string
   
   // Check BMP280 sensor and its thresholds
@@ -258,12 +298,16 @@ String getWarning() {
     warnings += "BMP280 DISCONNECTED | ";
   } else {
     // Temperature thresholds (can be adjusted for your needs)
-    if (temperature > 45) warnings += "HIGH TEMP! | ";      // Danger: too hot
-    if (temperature < -10) warnings += "LOW TEMP! | ";      // Danger: too cold
+    if (!isnan(temperature)) {
+      if (temperature > 45) warnings += "HIGH TEMP! | ";      // Danger: too hot
+      if (temperature < -10) warnings += "LOW TEMP! | ";      // Danger: too cold
+    }
     
     // Pressure thresholds
-    if (pressure < 950) warnings += "LOW PRESSURE! | ";     // Storm approaching
-    if (pressure > 1050) warnings += "HIGH PRESSURE! | ";   // Extreme high pressure
+    if (!isnan(pressure)) {
+      if (pressure < 950) warnings += "LOW PRESSURE! | ";     // Storm approaching
+      if (pressure > 1050) warnings += "HIGH PRESSURE! | ";   // Extreme high pressure
+    }
   }
   
   // Check MPU6050 sensor
@@ -271,13 +315,18 @@ String getWarning() {
     warnings += "MPU6050 DISCONNECTED | ";
   }
   
-  // Check soil moisture thresholds
-  if (soilPercent < 20) warnings += "SOIL TOO DRY! | ";     // Plant needs water
-  if (soilPercent > 80) warnings += "SOIL TOO WET! | ";     // Overwatered
+  // Check snow/soil moisture thresholds (for ski slope monitoring)
+  if (soilPercent < 20) warnings += "SNOW TOO DRY / NO SNOW! | ";     // Needs snowmaking
+  if (soilPercent > 80) warnings += "SNOW TOO WET / SLUSHY! | ";      // Too much water content
   
-  // Return "NORMAL" if no warnings, otherwise return warning string
-  if (warnings == "") return "NORMAL";
-  return warnings;
+  // Cache the result
+  if (warnings == "") {
+    cachedWarning = "NORMAL";
+  } else {
+    cachedWarning = warnings;
+  }
+  
+  return cachedWarning;
 }
 
 // ------------------ HTML WEB DASHBOARD ------------------
@@ -285,6 +334,7 @@ String getWarning() {
  * Generate HTML page for web dashboard
  * Shows all sensor readings with color-coded status
  * Auto-refreshes every 3 seconds
+ * Displays "N/A" instead of "nan" for invalid readings
  */
 String htmlPage() {
   String warning = getWarning();  // Get current warning status
@@ -313,10 +363,11 @@ String htmlPage() {
   // BMP280 sensor section
   page += "<div class='sensor'><h3>BMP280 - Environment</h3>";
   if (bmpConnected) {
-    // Show readings if sensor is connected
-    page += "<p><b>Temperature:</b> " + String(temperature, 2) + " &deg;C</p>";
-    page += "<p><b>Pressure:</b> " + String(pressure, 2) + " hPa</p>";
-    page += "<p><b>Altitude:</b> " + String(altitude, 2) + " m</p>";
+    // Show readings if sensor is connected (use N/A for invalid values)
+    page += "<p><b>Temperature:</b> " + floatToStringOrNA(temperature) + " &deg;C</p>";
+    page += "<p><b>Pressure:</b> " + floatToStringOrNA(pressure) + " hPa</p>";
+    page += "<p><b>Altitude:</b> " + floatToStringOrNA(altitude) + " m</p>";
+    page += "<p style='font-size:12px;color:#666;'>Note: Altitude accuracy depends on sea-level pressure setting (" + String(SEA_LEVEL_PRESSURE, 2) + " hPa)</p>";
   } else {
     // Show error message if sensor disconnected
     page += "<p style='color:red;'>SENSOR NOT CONNECTED</p>";
@@ -326,10 +377,10 @@ String htmlPage() {
   // MPU6050 sensor section
   page += "<div class='sensor'><h3>MPU6050 - Motion</h3>";
   if (mpuConnected) {
-    // Show readings if sensor is connected
-    page += "<p><b>Accel X/Y/Z:</b> " + String(accelX, 2) + " / " + String(accelY, 2) + " / " + String(accelZ, 2) + " m/s&sup2;</p>";
-    page += "<p><b>Gyro X/Y/Z:</b> " + String(gyroX, 2) + " / " + String(gyroY, 2) + " / " + String(gyroZ, 2) + " rad/s</p>";
-    page += "<p><b>MPU Temp:</b> " + String(mpuTemp, 2) + " &deg;C</p>";
+    // Show readings if sensor is connected (use N/A for invalid values)
+    page += "<p><b>Accel X/Y/Z:</b> " + floatToStringOrNA(accelX) + " / " + floatToStringOrNA(accelY) + " / " + floatToStringOrNA(accelZ) + " m/s&sup2;</p>";
+    page += "<p><b>Gyro X/Y/Z:</b> " + floatToStringOrNA(gyroX) + " / " + floatToStringOrNA(gyroY) + " / " + floatToStringOrNA(gyroZ) + " rad/s</p>";
+    page += "<p><b>MPU Temp:</b> " + floatToStringOrNA(mpuTemp) + " &deg;C</p>";
   } else {
     // Show error message if sensor disconnected
     page += "<p style='color:red;'>SENSOR NOT CONNECTED</p>";
@@ -337,8 +388,9 @@ String htmlPage() {
   page += "</div>";
   
   // Soil moisture sensor section
-  page += "<div class='sensor'><h3>HD-38 - Soil Moisture</h3>";
+  page += "<div class='sensor'><h3>HD-38 - Snow Moisture</h3>";
   page += "<p><b>Moisture:</b> " + String(soilPercent) + "% (Raw: " + String(soilRaw) + ")</p>";
+  page += "<p style='font-size:12px;color:#666;'>Calibrated: Dry/No Snow=" + String(SOIL_RAW_DRY) + ", Wet/Slushy=" + String(SOIL_RAW_WET) + "</p>";
   page += "</div>";
   
   // Status/warning section with color-coded background
@@ -353,6 +405,7 @@ String htmlPage() {
  * Generate JSON formatted data for API access
  * Returns all sensor readings in structured JSON format
  * Can be used by other applications to read sensor data
+ * Uses "null" for invalid values (proper JSON format, not "nan")
  */
 String jsonData() {
   String json = "{";
@@ -360,23 +413,25 @@ String jsonData() {
   // BMP280 data object
   json += "\"bmp280\":{";
   json += "\"connected\":" + String(bmpConnected ? "true" : "false") + ",";
-  json += "\"temperature\":" + String(temperature, 2) + ",";
-  json += "\"pressure\":" + String(pressure, 2) + ",";
-  json += "\"altitude\":" + String(altitude, 2);
+  json += "\"temperature\":" + floatToStringOrNull(temperature) + ",";
+  json += "\"pressure\":" + floatToStringOrNull(pressure) + ",";
+  json += "\"altitude\":" + floatToStringOrNull(altitude) + ",";
+  json += "\"sea_level_pressure\":" + String(SEA_LEVEL_PRESSURE, 2);
   json += "},";
   
   // MPU6050 data object
   json += "\"mpu6050\":{";
   json += "\"connected\":" + String(mpuConnected ? "true" : "false") + ",";
-  json += "\"accel\":{\"x\":" + String(accelX, 2) + ",\"y\":" + String(accelY, 2) + ",\"z\":" + String(accelZ, 2) + "},";
-  json += "\"gyro\":{\"x\":" + String(gyroX, 2) + ",\"y\":" + String(gyroY, 2) + ",\"z\":" + String(gyroZ, 2) + "},";
-  json += "\"temperature\":" + String(mpuTemp, 2);
+  json += "\"accel\":{\"x\":" + floatToStringOrNull(accelX) + ",\"y\":" + floatToStringOrNull(accelY) + ",\"z\":" + floatToStringOrNull(accelZ) + "},";
+  json += "\"gyro\":{\"x\":" + floatToStringOrNull(gyroX) + ",\"y\":" + floatToStringOrNull(gyroY) + ",\"z\":" + floatToStringOrNull(gyroZ) + "},";
+  json += "\"temperature\":" + floatToStringOrNull(mpuTemp);
   json += "},";
   
   // Soil moisture data object
-  json += "\"soil\":{";
+  json += "\"snow_moisture\":{";
   json += "\"raw\":" + String(soilRaw) + ",";
-  json += "\"percent\":" + String(soilPercent);
+  json += "\"percent\":" + String(soilPercent) + ",";
+  json += "\"calibration\":{\"dry\":" + String(SOIL_RAW_DRY) + ",\"wet\":" + String(SOIL_RAW_WET) + "}";
   json += "},";
   
   // Current warning status
@@ -455,29 +510,29 @@ void loop() {
   
   // Print BMP280 data
   Serial.print("BMP280 - Temp: ");
-  Serial.print(temperature);
+  Serial.print(floatToStringOrNA(temperature));
   Serial.print("°C | Pressure: ");
-  Serial.print(pressure);
+  Serial.print(floatToStringOrNA(pressure));
   Serial.print("hPa | Altitude: ");
-  Serial.print(altitude);
+  Serial.print(floatToStringOrNA(altitude));
   Serial.println("m");
   
   // Print MPU6050 data
   Serial.print("MPU6050 - Accel: ");
-  Serial.print(accelX);
+  Serial.print(floatToStringOrNA(accelX));
   Serial.print(",");
-  Serial.print(accelY);
+  Serial.print(floatToStringOrNA(accelY));
   Serial.print(",");
-  Serial.print(accelZ);
+  Serial.print(floatToStringOrNA(accelZ));
   Serial.print(" | Gyro: ");
-  Serial.print(gyroX);
+  Serial.print(floatToStringOrNA(gyroX));
   Serial.print(",");
-  Serial.print(gyroY);
+  Serial.print(floatToStringOrNA(gyroY));
   Serial.print(",");
-  Serial.println(gyroZ);
+  Serial.println(floatToStringOrNA(gyroZ));
   
   // Print soil moisture data
-  Serial.print("Soil - ");
+  Serial.print("Snow Moisture - ");
   Serial.print(soilPercent);
   Serial.print("% (Raw: ");
   Serial.print(soilRaw);
